@@ -1,0 +1,150 @@
+# Daily publish: chance zones, rain, tap cells, stations -> GitHub Pages (see README.md, docs/format.md).
+# Runs after shroomzn.app's own runs (06:17 / 12:17 UTC, can start late); skips when its weather is unchanged.
+# Also called by trees.yml (trees: true) to rebuild the static tree map and publish it.
+name: daily
+
+on:
+  schedule:
+    - cron: "30 7 * * *"
+    - cron: "30 13 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Publish even if the weather has not changed
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      force:
+        type: boolean
+        default: false
+      trees:
+        description: Build a new trees-<ver>.pmtiles before publishing
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# one publish at a time; a queued run waits instead of cancelling the running one
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  TIPPECANOE_VERSION: "2.79.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.trees && 120 || 60 }}
+    outputs:
+      skip: ${{ steps.publish.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+
+      - name: Install Python packages
+        run: pip install -r pipeline/requirements.txt
+
+      - name: Cache tippecanoe
+        id: tippecanoe
+        uses: actions/cache@v6
+        with:
+          path: ~/.local/tippecanoe
+          key: tippecanoe-${{ env.TIPPECANOE_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Build tippecanoe
+        if: steps.tippecanoe.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q build-essential libsqlite3-dev zlib1g-dev
+          git clone --depth 1 --branch "$TIPPECANOE_VERSION" https://github.com/felt/tippecanoe.git "$RUNNER_TEMP/tippecanoe"
+          make -C "$RUNNER_TEMP/tippecanoe" -j"$(nproc)"
+          make -C "$RUNNER_TEMP/tippecanoe" install PREFIX="$HOME/.local/tippecanoe"
+
+      - name: Put tippecanoe on PATH
+        run: |
+          echo "$HOME/.local/tippecanoe/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/tippecanoe/bin/tippecanoe" --version
+
+      # site grids (his 5 npz) + our Upper Austria forest (ooe_forest.fgb, ooe_trees.fgb); cache keyed on the assets
+      - name: Release assets key
+        id: assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          key=$(gh release view habitat-grids -R "$GITHUB_REPOSITORY" --json assets \
+                --jq '[.assets[] | "\(.name):\(.id):\(.size):\(.updatedAt)"] | sort | join(",")' | sha256sum | cut -c1-16)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - name: Cache release assets
+        id: grids
+        uses: actions/cache@v6
+        with:
+          path: |
+            grids
+            work/cache
+          key: habitat-grids-${{ steps.assets.outputs.key }}
+
+      - name: Download release assets
+        if: steps.grids.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download habitat-grids -R "$GITHUB_REPOSITORY" -D grids --clobber
+          ls -l grids
+
+      - name: Build trees
+        if: inputs.trees
+        run: |
+          test -f grids/ooe_trees.fgb || { echo "::error::ooe_trees.fgb is not in the habitat-grids release"; exit 1; }
+          python pipeline/trees.py build grids grids/ooe_trees.fgb site
+
+      - name: Publish
+        id: publish
+        env:
+          FORCE: ${{ (inputs.force || inputs.trees) && 'true' || 'false' }}
+        run: |
+          args=(--site site)
+          if [ "$FORCE" = true ]; then args+=(--force); fi
+          python pipeline/publish.py "${args[@]}"
+
+      - name: Site summary
+        if: steps.publish.outputs.skip == 'false'
+        run: |
+          {
+            echo "### Site"
+            echo '```'
+            du -sh site
+            find site -type f | wc -l
+            cat site/index.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Pages artifact
+        if: steps.publish.outputs.skip == 'false'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

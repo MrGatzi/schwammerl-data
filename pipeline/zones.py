@@ -335,18 +335,18 @@ def smooth_local(g):
     return _polygonal(_valid(g))
 
 
-def _minzoom(area_m2: float) -> int:
+def _minzoom(area_m2: float, maxzoom: int = MAXZOOM) -> int:
     """first zoom where the part spans >= ~1.5 screen px (256 px tiles, ~48 deg N): drops slivers at low zoom."""
     px_z0 = 104_750.0 * 1.5
-    return int(min(MAXZOOM, max(MINZOOM, math.ceil(math.log2(px_z0 / max(math.sqrt(area_m2), 1.0))))))
+    return int(min(maxzoom, max(MINZOOM, math.ceil(math.log2(px_z0 / max(math.sqrt(area_m2), 1.0))))))
 
 
-def _feature(p, props: dict) -> str:
+def _feature(p, props: dict, maxzoom: int = MAXZOOM) -> str:
     g = shapely.transform(p, lambda c: np.column_stack(_TO_WGS.transform(c[:, 0], c[:, 1])))
     g = shapely.set_precision(g, 10 ** -COORD_DIGITS, mode="pointwise")
     if not g.is_valid:                     # rounding can pinch narrow Chaikin necks
         g = _polygonal(_valid(g))
-    tip = f',"tippecanoe":{{"minzoom":{_minzoom(p.area)}}}' if props else ""
+    tip = f',"tippecanoe":{{"minzoom":{_minzoom(p.area, maxzoom)}}}' if props else ""
     return (f'{{"type":"Feature","properties":{json.dumps(props, separators=(",", ":"))}{tip},'
             f'"geometry":{shapely.to_geojson(g)}}}')
 
@@ -427,6 +427,11 @@ TIPPECANOE_ARGS = ["-l", "chance", "-y", "lv", "--coalesce", "--reorder", "--det
                    "--simplification-at-maximum-zoom=2", "--hilbert", "-P", "--force", "-q"]
 
 
+def tippecanoe_cmd(paths: list[str | Path], out: str | Path, maxzoom: int = MAXZOOM, extra: list[str] | None = None) -> list[str]:
+    return ["tippecanoe", "-o", str(out), "-Z", str(MINZOOM), "-z", str(maxzoom), *TIPPECANOE_ARGS, *(extra or []),
+            *[str(p) for p in paths]]
+
+
 def to_pmtiles(paths: list[str | Path], out: str | Path, maxzoom: int = MAXZOOM, extra: list[str] | None = None) -> dict:
     """one or more region geojsonseq files (e.g. AT, CH, DE_S, DE_M, DE_N of one species) -> one PMTiles
     (layer 'chance', prop lv, z5..maxzoom; the map overzooms beyond)."""
@@ -434,9 +439,7 @@ def to_pmtiles(paths: list[str | Path], out: str | Path, maxzoom: int = MAXZOOM,
     if all(Path(p).stat().st_size == 0 for p in paths):
         # nothing above Möglich anywhere (out of season): tippecanoe refuses empty input; index.json gets file null
         return {"file": None, "bytes": 0, "seconds": 0.0}
-    cmd = ["tippecanoe", "-o", str(out), "-Z", str(MINZOOM), "-z", str(maxzoom), *TIPPECANOE_ARGS, *(extra or []),
-           *[str(p) for p in paths]]
-    subprocess.run(cmd, check=True)
+    subprocess.run(tippecanoe_cmd(paths, out, maxzoom, extra), check=True)
     return {"file": str(out), "bytes": Path(out).stat().st_size, "seconds": round(time.time() - t0, 1)}
 
 

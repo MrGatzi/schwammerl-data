@@ -1,0 +1,21 @@
+# Rebuild the static tree map (trees-<ver>.pmtiles) from the site grids + our Upper Austria polygons
+# (release habitat-grids: *.npz, ooe_trees.fgb) and publish it right away. Run by hand when the grids change.
+# Reuses daily.yml (same inputs, caches and deploy); the daily runs then keep serving the new trees file.
+name: trees
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    uses: ./.github/workflows/daily.yml
+    with:
+      trees: true
+      force: true
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
