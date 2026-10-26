@@ -1,0 +1,7 @@
+.venv/
+grids/
+work/
+out/
+site/
+__pycache__/
+*.pyc
