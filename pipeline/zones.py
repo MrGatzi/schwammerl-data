@@ -369,7 +369,9 @@ def build_zones(score: np.ndarray, grid, forest: np.ndarray, region: str, out_ge
     _S.update(score=score.astype(np.float32, copy=False), forest=forest, grid=grid,
               own=own if own is not None else np.ones(forest.shape, bool), forest_out=bool(forest_out),
               fcache=forest_cache)
-    if ooe_forest and Path(ooe_forest).exists():
+    if ooe_forest:
+        if not Path(ooe_forest).exists():
+            raise FileNotFoundError(f"ooe_forest not found: {ooe_forest}")
         _S["local"] = LocalForest(ooe_forest)
     H, W = score.shape
     tasks = [(r, c) for r in range(0, H, BLOCK) for c in range(0, W, BLOCK)]
@@ -429,6 +431,9 @@ def to_pmtiles(paths: list[str | Path], out: str | Path, maxzoom: int = MAXZOOM,
     """one or more region geojsonseq files (e.g. AT, CH, DE_S, DE_M, DE_N of one species) -> one PMTiles
     (layer 'chance', prop lv, z5..maxzoom; the map overzooms beyond)."""
     t0 = time.time()
+    if all(Path(p).stat().st_size == 0 for p in paths):
+        # nothing above Möglich anywhere (out of season): tippecanoe refuses empty input; index.json gets file null
+        return {"file": None, "bytes": 0, "seconds": 0.0}
     cmd = ["tippecanoe", "-o", str(out), "-Z", str(MINZOOM), "-z", str(maxzoom), *TIPPECANOE_ARGS, *(extra or []),
            *[str(p) for p in paths]]
     subprocess.run(cmd, check=True)

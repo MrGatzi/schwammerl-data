@@ -23,7 +23,7 @@ Each publish keeps the stamped files of the previous publish online (the app may
 }
 ```
 
-`bounds` = [west, south, east, north] in degrees. Species ids are his `PILZ_IDS` (lowercase, as in `pilz.js`).
+`bounds` = [west, south, east, north] in degrees. Species ids are his `PILZ_IDS` (lowercase, as in `pilz.js`). A species with no zone anywhere today (out of season) has `"file": null`; the app shows that as "no chance today", not as an error.
 
 ## Vector tiles (PMTiles, EPSG:3857 tiles, MVT)
 
