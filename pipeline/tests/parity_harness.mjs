@@ -5,8 +5,9 @@
 //
 // in.json: { planes: [{name, scale, offset}], atOwnHeight, dates: [[y, m, d]], species: [ids],
 //            cells: {n, site: base64 (6 x 65536 packed site bytes), wx: base64 (6 x n weather bytes)},
+//            latlon: {lat, lon: base64 float64}, wgeo: {n, w, s, e, nx, ny},
 //            patches: [{site: base64 (6 x 65536), wx: base64 (6 x 65536)}] }
-// out: score_<date>_<sp>.f64, level_<date>_<sp>.u8 (pilzScore / pilzLevel for each cell),
+// out: widx.i32 (pilzWeatherAt's weather cell index for each latlon), score_<date>_<sp>.f64, level_<date>_<sp>.u8 (pilzScore / pilzLevel for each cell),
 //      patch<i>_<date>_<sp>.raw.f32 / .shown.f32 / .lv.u8 (pilzRender's raw, scores and levels)
 import fs from "fs";
 import path from "path";
@@ -17,7 +18,7 @@ const src = fs.readFileSync(jsPath, "utf8").split("\n");
 // top-level declarations of the reference script (the rest needs a browser and Leaflet)
 const NAMES = ["PILZ_GENERA", "PILZ_SPECIES", "PILZ_LEVELS", "PILZ_STEPS", "SHARE_W", "SLOPE_MID", "STREAM_DM",
   "pilzIrradiance", "pilzClamp", "pilzSeason", "pilzDecode", "pilzSite", "pilzSiteRank", "pilzScore", "pilzLut",
-  "pilzLevel", "pilzCompile", "pilzMemo", "pilzRender"];
+  "pilzLevel", "pilzWeatherAt", "pilzCompile", "pilzMemo", "pilzRender"];
 function chunk(name) {
   const re = new RegExp(`^(const|let|function|async function) ${name}\\b`);
   const i = src.findIndex(l => re.test(l));
@@ -44,7 +45,7 @@ const pilz = { wx: null, rendered: new Map() };
 let tileData = null;
 const pilzTile = () => Promise.resolve(tileData);
 const M = new Function("Date", "state", "pilz", "pilzTile", "ImageData",
-  code + "\nreturn { PILZ_SPECIES, pilzScore, pilzSeason, pilzLevel, pilzDecode, pilzRender };")(
+  code + "\nreturn { PILZ_SPECIES, pilzScore, pilzWeatherAt, pilzSeason, pilzLevel, pilzDecode, pilzRender };")(
   FakeDate, state, pilz, pilzTile, ImageData);
 
 const inp = JSON.parse(fs.readFileSync(inPath, "utf8"));
@@ -74,6 +75,16 @@ for (const [y, m, d] of inp.dates) {
     write(`score_${tag}_${id}.f64`, score);
     write(`level_${tag}_${id}.u8`, lvl);
   }
+}
+
+// ---- weather cell of a lat/lon: pilzWeatherAt with the reference's own n / dlat / dlon
+{
+  const g = inp.wgeo;
+  pilz.wx = { n: g.n, w: g.w, nx: g.nx, ny: g.ny, dlon: (g.e - g.w) / g.nx, dlat: (g.n - g.s) / g.ny, cell: k => k };
+  const f64 = s => { const u = b64(s); return new Float64Array(u.buffer, u.byteOffset, u.byteLength / 8); };
+  const lat = f64(inp.latlon.lat), lon = f64(inp.latlon.lon), idx = new Int32Array(lat.length);
+  for (let k = 0; k < lat.length; k++) { const r = M.pilzWeatherAt(lat[k], lon[k]); idx[k] = r == null ? -1 : r; }
+  write("widx.i32", idx);
 }
 
 // ---- patches: pilzRender with a weather grid so fine that every pixel has its own weather cell

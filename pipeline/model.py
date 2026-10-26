@@ -22,11 +22,12 @@ import datetime as dt
 import json
 import math
 import time
-import urllib.request
 import zlib
 from pathlib import Path
 
 import numpy as np
+
+import shroomzn_io
 
 ROOT = Path(__file__).resolve().parent.parent
 GRIDS = ROOT / "grids"
@@ -57,8 +58,7 @@ def load_species(path: Path = SPECIES_JSON) -> dict:
 def fetch_weather(dst: Path = WORK / "wx") -> Path:
     dst.mkdir(parents=True, exist_ok=True)
     for name in ("pilz_weather.json", "pilz_weather.bin"):
-        with urllib.request.urlopen(WEATHER_URL + name, timeout=60) as r:
-            (dst / name).write_bytes(r.read())
+        (dst / name).write_bytes(shroomzn_io.read_bytes(WEATHER_URL, name, timeout=60))
     return dst / "pilz_weather.json"
 
 

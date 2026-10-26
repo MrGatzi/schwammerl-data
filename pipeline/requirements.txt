@@ -1,9 +1,10 @@
-numpy
-scipy
-rasterio
-shapely
-pyproj
-pyogrio
-matplotlib
-pytest
-contourpy
+# tippecanoe >= 2.17 is a system dependency (not installable via pip)
+contourpy==1.4.0
+matplotlib==3.11.2
+numpy==2.5.4
+pyogrio==0.13.0
+pyproj==3.8.0
+pytest==9.1.1
+rasterio==1.5.2
+scipy==1.18.1
+shapely==2.2.0

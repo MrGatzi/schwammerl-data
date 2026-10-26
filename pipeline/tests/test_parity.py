@@ -1,7 +1,7 @@
 """Parity of pipeline/model.py with the reference model (shroomzn habitat/pilz.js, run in Node).
 
-Needs node and the reference checkout ($SHROOMZN_DIR, with habitat/pilz.js); skipped without them.
-  .venv/bin/python -m pytest pipeline/tests/test_parity.py -s
+Needs node and a checkout of OutFoxD/shroomzn in $SHROOMZN_DIR (habitat/pilz.js); skipped without them.
+  SHROOMZN_DIR=... .venv/bin/python -m pytest pipeline/tests/test_parity.py -s
 """
 from __future__ import annotations
 
@@ -15,22 +15,21 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pyproj
 import pytest
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import model  # noqa: E402
 
-DEFAULT_REF = ("/private/tmp/claude-501/-Users-martingatzweiler-Developer-Schwammerl/"
-               "c7047b06-8223-4110-9fde-2f19ceea38f4/scratchpad/shroomzn")
-REF = Path(os.environ.get("SHROOMZN_DIR", DEFAULT_REF))
+REF = Path(os.environ.get("SHROOMZN_DIR", "/nonexistent"))
 PILZ_JS = REF / "habitat" / "pilz.js"
 DATES = [dt.date(2026, 10, 26), dt.date(2026, 4, 12), dt.date(2026, 7, 31)]
 CELLS = {"AT": 3000, "CH": 3000, "DE_S": 2000, "DE_M": 2000, "DE_N": 2000}     # 12 000 random forest cells
 TOL = 1e-6
 
 pytestmark = pytest.mark.skipif(not PILZ_JS.exists() or shutil.which("node") is None,
-                                reason="reference pilz.js ($SHROOMZN_DIR) or node missing")
+                                reason="set SHROOMZN_DIR to a checkout of OutFoxD/shroomzn (habitat/pilz.js) and install node")
 
 
 def pack(f: dict, idx) -> np.ndarray:
@@ -52,6 +51,8 @@ def run(tmp_path_factory):
     ids = list(species)
     rng = np.random.default_rng(7)
     cell_site, cell_wx, ours_cells, patches, ours_patch = [], [], [], [], []
+    to_wgs = pyproj.Transformer.from_crs("EPSG:3035", "EPSG:4326", always_xy=True)
+    lats, lons, widx_ours = [], [], []
     for region, n in CELLS.items():
         reg = model.Region(region, w)
         _, f, _ = model.load_grid(region)
@@ -61,6 +62,9 @@ def run(tmp_path_factory):
         pick = rng.choice(len(reg.cells), n, replace=False)
         cell_site.append(pack(f, reg.cells[pick]))
         cell_wx.append(w.bytes[:, reg.widx[pick]])
+        x0, y1, res, gw, _ = reg.grid
+        lon, lat = to_wgs.transform(x0 + (reg.cells[pick] % gw + 0.5) * res, y1 - (reg.cells[pick] // gw + 0.5) * res)
+        lats.append(lat); lons.append(lon); widx_ours.append(reg.widx[pick])
         ours_cells.append({(d, sid): reg.raw(species[sid], d, np.float64)[pick] for d in DATES for sid in ids})
         # one 256 x 256 window around a random forest cell
         k = reg.cells[rng.integers(len(reg.cells))]
@@ -82,6 +86,9 @@ def run(tmp_path_factory):
     site = np.zeros((6, 65536), np.uint8)
     site[:, :nc] = np.concatenate(cell_site, axis=1)
     inp = {"planes": w.doc["planes"], "atOwnHeight": w.at_own_height, "dates": [[d.year, d.month, d.day] for d in DATES],
+           "wgeo": {"n": w.n, "w": w.w, "s": w.s, "e": w.e, "nx": w.nx, "ny": w.ny},
+           "latlon": {"lat": b64(np.concatenate(lats).astype("<f8").view(np.uint8)),
+                      "lon": b64(np.concatenate(lons).astype("<f8").view(np.uint8))},
            "species": ids, "cells": {"n": nc, "site": b64(site), "wx": b64(np.concatenate(cell_wx, axis=1))},
            "patches": patches}
     (tmp / "in.json").write_text(json.dumps(inp))
@@ -89,7 +96,7 @@ def run(tmp_path_factory):
     out.mkdir()
     subprocess.run(["node", str(HERE / "parity_harness.mjs"), str(PILZ_JS), str(tmp / "in.json"), str(out)],
                    check=True, timeout=600)
-    return {"out": out, "ids": ids, "nc": nc, "cells": ours_cells, "patch": ours_patch}
+    return {"out": out, "ids": ids, "nc": nc, "widx": np.concatenate(widx_ours), "cells": ours_cells, "patch": ours_patch}
 
 
 def test_species_json_matches_reference(tmp_path):
@@ -98,6 +105,12 @@ def test_species_json_matches_reference(tmp_path):
                    capture_output=True)
     assert json.loads(dump.read_text()) == model.load_species(), "pipeline/species.json is out of date"
     assert len(model.load_species()) == 20
+
+
+def test_weather_cell_of_lat_lon(run):
+    js = np.fromfile(run["out"] / "widx.i32", np.int32)
+    assert len(js) == len(run["widx"]) >= 500 * len(CELLS)
+    assert np.array_equal(js, run["widx"]), f"{int((js != run['widx']).sum())} cells map to another weather cell"
 
 
 def test_cells_score_and_level(run):

@@ -3,6 +3,8 @@
 Base URL: `https://mrgatzi.github.io/schwammerl-data/` (GitHub Pages, HTTP Range + CORS verified 2026-10-26).
 All paths below are relative to the base URL. Stamps are `YYYYMMDDHHmm` (UTC) of the publish run.
 
+Each publish keeps the stamped files of the previous publish online (the app may hold an `index.json` for up to 3 h; runs are ~6 h apart), and deletes anything older.
+
 ## index.json
 
 ```json
@@ -28,7 +30,7 @@ All paths below are relative to the base URL. Stamps are `YYYYMMDDHHmm` (UTC) of
 | File | Layer | Geometry | Properties | Zooms |
 |---|---|---|---|---|
 | `chance/<id>-<stamp>.pmtiles` | `chance` | Polygon | `lv` int 1 = Möglich, 2 = Gut, 3 = Top (disjoint bands) | z5–z13 |
-| `rain-<stamp>.pmtiles` | `rain` | Polygon | `p` int period days (1/3/7/14), `mm` lower bound, `to` upper bound (number, last band `to` = 9999) | z4–z10 |
+| `rain-<stamp>.pmtiles` | `rain` | Polygon | `p` int period days (1/3/7/14), `mm` lower bound, `to` upper bound (number, last band `to` = 9999); a band covers `mm < value ≤ to` | z4–z10 |
 | same file | `rain_lines` | LineString | `p`, `mm` (isoline value, for labels) | z6–z10 |
 | `trees-<ver>.pmtiles` | `trees` | Polygon | `g` string genus key, same keys as the app's `treeColorExpression` (`src/map/constants.ts`) | z7–z13 |
 

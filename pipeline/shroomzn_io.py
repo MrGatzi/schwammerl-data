@@ -84,4 +84,6 @@ def read_station_files(src: str = SHROOMZN_DATA):
             docs[cc] = read_json(src, name)
         except Exception as e:                   # one missing country must not stop the others
             print(f"stations: {name} not read ({type(e).__name__}: {e})")
+    if not docs:
+        raise RuntimeError("stations: none of the station files could be read")
     return docs
