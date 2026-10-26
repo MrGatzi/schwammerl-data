@@ -6,3 +6,4 @@ pyproj
 pyogrio
 matplotlib
 pytest
+contourpy

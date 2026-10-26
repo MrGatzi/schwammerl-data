@@ -43,7 +43,7 @@ The grid is the ~1 km weather grid of `pilz_weather` (bounds [[45.75,5.8],[55.1,
 ```
 
 `st` = `soil_t0` °C, `m` = `moist`. Cells without any data are left out. The app finds the cell by
-`row = floor((55.1 - lat) / (55.1 - 45.75) * 1039)`, `col = floor((lon - 5.8) / (17.3 - 5.8) * 920)`.
+`row = floor((55.1 - lat) / 0.009)`, `col = floor((lon - 5.8) / 0.0125)` (grid steps from pilz_weather.json; row 0..1038, col 0..919). A cell that straddles a degree line is written to both chunks.
 
 ## stations-<stamp>.json
 
