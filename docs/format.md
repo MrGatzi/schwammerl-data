@@ -29,7 +29,7 @@ Each publish keeps the stamped files of the previous publish online (the app may
 
 | File | Layer | Geometry | Properties | Zooms |
 |---|---|---|---|---|
-| `chance/<id>-<stamp>.pmtiles` | `chance` | Polygon | `lv` int 1 = Möglich, 2 = Gut, 3 = Top (disjoint bands) | z5–z13 |
+| `chance/<id>-<stamp>.pmtiles` | `chance` | Polygon | `lv` int 1 = Möglich, 2 = Gut, 3 = Top (disjoint bands) | z5–z12 (app overzooms) |
 | `rain-<stamp>.pmtiles` | `rain` | Polygon | `p` int period days (1/3/7/14), `mm` lower bound, `to` upper bound (number, last band `to` = 9999); a band covers `mm < value ≤ to` | z4–z10 |
 | same file | `rain_lines` | LineString | `p`, `mm` (isoline value, for labels) | z6–z10 |
 | `trees-<ver>.pmtiles` | `trees` | Polygon | `g` string genus key, same keys as the app's `treeColorExpression` (`src/map/constants.ts`) | z7–z13 |

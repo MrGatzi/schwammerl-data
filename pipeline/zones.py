@@ -49,7 +49,7 @@ CHAIKIN_ITER = 2
 MIN_PART_M2 = 1_000.0                # drop band parts < 0.1 ha
 BLOCK = 250                          # cells per block side (25 km)
 MARGIN = 4                           # cells; >= fill reach (2) + bilinear support (1) + smoothing slack
-MINZOOM, MAXZOOM = 5, 13
+MINZOOM, MAXZOOM = 5, 12
 COORD_DIGITS = 6                     # ~0.1 m
 # his grid boxes (habitat/build.py REGIONS); AT.npz in the release has no 'grid' key
 GRID_FALLBACK = {"AT": [4_200_000, 2_940_000, 100, 7000, 4000]}
