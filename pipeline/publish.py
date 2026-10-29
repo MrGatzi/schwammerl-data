@@ -1,17 +1,22 @@
 """Daily publish: chance zones for all species + rain + tap cells + stations -> site/ + index.json -> R2 (docs/format.md).
 
 usage:
-  python pipeline/publish.py --site site/ [--upload] [--force] [--rain-src SRC]
+  python pipeline/publish.py --site site/ [--upload] [--force] [--src SRC] [--rain-src SRC]
+
+--src is where pilz_weather, rain_daily and the station files come from: a directory written by weather.py (the
+workflow's own run of shroomzn.app's code, `--src wx`) or a base URL (default https://shroomzn.app/data, which
+answers 403 to GitHub Actions runners).
 
 Without --upload it is a dry run: builds site/, validates and prints the upload plan, changes nothing online
 (with R2 credentials in the environment it checks against the bucket listing, else HEADs the public URL).
 
 Steps:
-  1. fetch pilz_weather from shroomzn.app, read the live index.json (404 on the first run);
-     same `weatherGenerated` as the live index -> print "skip", GitHub output skip=true, exit 0 (unless --force)
-  2. rain: build from rain_daily (shroomzn.app). Not there yet (404): reference the previous publish's rain, cells
-     and stations (and its rainDays; they stay in the bucket); no previous publish: build from --rain-src /
-     $RAIN_SRC; else fail
+  1. read pilz_weather from --src, read the live index.json (404 on the first run);
+     same `weatherGenerated` as the live index -> print "skip", GitHub output skip=true, exit 0 (unless --force).
+     A fresh weather.py run always has a new `generated`, so with `--src wx` every run publishes.
+  2. rain: build from rain_daily + station files of --src. No rain_daily there: reference the previous publish's
+     rain, cells and stations (and its rainDays; they stay in the bucket); no previous publish: build from
+     --rain-src / $RAIN_SRC (stations still from --src); else fail
   3. per species: score all regions (model.py), zones (zones.py), PMTiles z5-z12 -> site/chance/<id>-<stamp>.pmtiles
   4. trees: a trees-*.pmtiles in site/ (built by trees.py) wins, else the live one
   5. write site/index.json, validate (keys; every referenced file built or already in the bucket; size guards of
@@ -198,10 +203,11 @@ def main(argv=None) -> int:
     ap.add_argument("--upload", action="store_true", help="upload to R2 and prune (needs R2_* credentials); "
                     "without it: dry run")
     ap.add_argument("--force", action="store_true", help="publish even if the weather has not changed")
-    ap.add_argument("--src", default=sio.SHROOMZN_DATA, help="shroomzn.app data source (URL or dir)")
+    ap.add_argument("--src", default=sio.SHROOMZN_DATA,
+                    help="weather source: weather.py output dir, or URL (default: shroomzn.app/data)")
     ap.add_argument("--live", default=os.environ.get("LIVE_URL", LIVE), help="public URL of the bucket (previous index)")
     ap.add_argument("--rain-src", default=os.environ.get("RAIN_SRC"),
-                    help="rain_daily source used when shroomzn.app has none and there is no previous publish")
+                    help="rain_daily source used when --src has none and there is no previous publish")
     ap.add_argument("--grids", default=str(ROOT / "grids"), help="dir with AT/CH/DE_S/DE_M/DE_N.npz")
     ap.add_argument("--ooe", help="ooe_forest.fgb (default: <grids>/ooe_forest.fgb, else out/ooe_forest.fgb)")
     ap.add_argument("--date", help="scoring date YYYY-MM-DD (default: today in Vienna)")
@@ -244,17 +250,17 @@ def main(argv=None) -> int:
     t = time.time()
     if rain_available(a.src):
         rr = rain.build_rain(a.src, str(wx_dir), a.src, str(site), stamp)
-        rain_idx, rep["rain"] = rr["index"], {"from": "shroomzn", "generated": rr.get("rainGenerated")}
+        rain_idx, rep["rain"] = rr["index"], {"from": a.src, "generated": rr.get("rainGenerated")}
     elif prev and prev.get("rain") and prev.get("cells") and prev.get("stations"):
         rain_idx = {k: prev[k] for k in ("rainDays", "rain", "cells", "stations")}
         rep["rain"] = {"from": "previous publish", "rainDays": prev["rainDays"]}
-        log("rain: rain_daily not on shroomzn.app yet, referencing the previous publish's rain, cells and stations")
+        log(f"rain: no rain_daily in {a.src}, referencing the previous publish's rain, cells and stations")
     elif a.rain_src:
         rr = rain.build_rain(a.rain_src, str(wx_dir), a.src, str(site), stamp)
         rain_idx, rep["rain"] = rr["index"], {"from": a.rain_src, "generated": rr.get("rainGenerated")}
     else:
-        raise SystemExit("rain: rain_daily.json is not on shroomzn.app (404) and there is no previous publish to "
-                         "reuse; pass --rain-src URL|DIR (or RAIN_SRC) with a rain_daily.json/.bin")
+        raise SystemExit(f"rain: no rain_daily.json in {a.src} and no previous publish to reuse; "
+                         "pass --rain-src URL|DIR (or RAIN_SRC) with a rain_daily.json/.bin")
     rep["rain"]["s"] = round(time.time() - t, 1)
 
     # 3. chance zones

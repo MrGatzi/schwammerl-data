@@ -1,5 +1,6 @@
 # Daily publish: chance zones, rain, tap cells, stations -> Cloudflare R2 (see README.md, docs/format.md).
-# Runs after shroomzn.app's own runs (06:17 / 12:17 UTC, can start late); skips when its weather is unchanged.
+# Computes the weather itself with shroomzn.app's code (pipeline/weather.py; shroomzn.app/data answers 403 to
+# Actions runners), then publishes. Skips only when the weather is unchanged (i.e. when it fell back to shroomzn.app).
 # Also called by trees.yml (trees: true) to rebuild the static tree map and publish it.
 name: daily
 
@@ -10,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: Publish even if the weather has not changed
+        description: Publish even if the weather has not changed (only matters for the shroomzn.app fallback)
         type: boolean
         default: false
   workflow_call:
@@ -40,7 +41,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.trees && 120 || 60 }}
+    # weather ~15-25 min, chance zones ~16 min, trees ~18 min (+ downloads, tippecanoe build on a cache miss)
+    timeout-minutes: ${{ inputs.trees && 150 || 90 }}
     steps:
       - uses: actions/checkout@v7
 
@@ -108,6 +110,35 @@ jobs:
           test -f grids/ooe_trees.fgb || { echo "::error::ooe_trees.fgb is not in the habitat-grids release"; exit 1; }
           python pipeline/trees.py build grids grids/ooe_trees.fgb site
 
+      # shroomzn.app's weather files, computed here with his code (pipeline/weather.py, ~15-25 min, mostly Open-Meteo
+      # pacing). wx-prev/ is the last successful run's output: a country whose rain grid fails this run keeps its
+      # rain from there. If this step fails, Publish falls back to shroomzn.app/data (403 on runners: the run then
+      # fails and the last good publish stays live).
+      - name: Restore previous weather
+        uses: actions/cache/restore@v6
+        with:
+          path: wx-prev
+          key: weather-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: weather-
+
+      - name: Compute weather
+        id: weather
+        continue-on-error: true
+        timeout-minutes: 45
+        run: python pipeline/weather.py wx --prev wx-prev
+
+      - name: Keep weather for the next run
+        id: keep
+        if: steps.weather.outcome == 'success'
+        run: rm -rf wx-prev && cp -r wx wx-prev
+
+      - name: Save weather
+        if: steps.keep.outcome == 'success'
+        uses: actions/cache/save@v6
+        with:
+          path: wx-prev
+          key: weather-${{ github.run_id }}-${{ github.run_attempt }}
+
       # builds site/, validates, uploads the new files, index.json last, then prunes the bucket
       - name: Publish
         id: publish
@@ -117,6 +148,11 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           args=(--site site --upload)
+          if [ -f wx/pilz_weather.json ]; then
+            args+=(--src wx)
+          else
+            echo "::warning::no weather computed this run, trying shroomzn.app/data"
+          fi
           if [ "$FORCE" = true ]; then args+=(--force); fi
           if [ -f grids/rain_daily.json ] && [ -f grids/rain_daily.bin ]; then args+=(--rain-src grids); fi
           python pipeline/publish.py "${args[@]}"

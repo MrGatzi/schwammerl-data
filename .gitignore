@@ -5,3 +5,5 @@ out/
 site/
 __pycache__/
 *.pyc
+wx/
+wx-prev/
