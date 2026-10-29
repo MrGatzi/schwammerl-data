@@ -1,4 +1,5 @@
 # tippecanoe >= 2.17 is a system dependency (not installable via pip)
+boto3==1.43.121
 contourpy==1.4.0
 matplotlib==3.11.2
 numpy==2.5.4

@@ -1,6 +1,6 @@
 # Rebuild the static tree map (trees-<ver>.pmtiles) from the site grids + our Upper Austria polygons
 # (release habitat-grids: *.npz, ooe_trees.fgb) and publish it right away. Run by hand when the grids change.
-# Reuses daily.yml (same inputs, caches and deploy); the daily runs then keep serving the new trees file.
+# Reuses daily.yml (same inputs, caches and upload); the daily runs then keep serving the new trees file.
 name: trees
 
 on:
@@ -15,7 +15,7 @@ jobs:
     with:
       trees: true
       force: true
+    secrets: inherit      # R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
     permissions:
       contents: read
-      pages: write
-      id-token: write
+      actions: write      # daily.yml's keepalive job (skipped here, but the grant is checked)

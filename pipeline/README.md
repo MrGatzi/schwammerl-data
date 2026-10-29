@@ -1,5 +1,12 @@
 # pipeline
 
+## Tests
+
+    .venv/bin/python -m pytest pipeline/tests -q
+
+`test_r2.py` covers the upload plan, size guards, upload order and prune selection of `r2.py` with a fake S3 client
+(no network).
+
 ## Parity test
 
 `pipeline/tests/test_parity.py` compares `model.py` with the reference model (`habitat/pilz.js` of shroomzn.app, run in Node). Check out [OutFoxD/shroomzn](https://github.com/OutFoxD/shroomzn) and run

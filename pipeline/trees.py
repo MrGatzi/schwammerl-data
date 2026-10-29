@@ -40,7 +40,7 @@ import zones as Z  # noqa: E402
 GENERA = ["larix", "picea", "pinus", "fagus", "quercus", "conifer", "broadleaf"]   # his g1 codes 0..6
 SIGMA = 0.7                   # cells: share-field smoothing (removes single-cell speckle)
 MIN_PART_M2 = 5_000.0         # genus parts < 0.5 ha are dropped (grid part)
-MINZOOM, MAXZOOM = 7, 11          # z12 would be ~140 MB (Pages: 100 MB per file); the app overzooms
+MINZOOM, MAXZOOM = 7, 11          # z12 would be ~140 MB for little gain; the app overzooms
 TIPPECANOE_ARGS = ["-l", "trees", "-y", "g", "--coalesce", "--reorder", "--detect-shared-borders",
                    "--no-tiny-polygon-reduction", "--coalesce-smallest-as-needed", "--simplification=4",
                    "--simplification-at-maximum-zoom=2", "--hilbert", "-P", "--force", "-q",

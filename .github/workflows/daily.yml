@@ -1,4 +1,4 @@
-# Daily publish: chance zones, rain, tap cells, stations -> GitHub Pages (see README.md, docs/format.md).
+# Daily publish: chance zones, rain, tap cells, stations -> Cloudflare R2 (see README.md, docs/format.md).
 # Runs after shroomzn.app's own runs (06:17 / 12:17 UTC, can start late); skips when its weather is unchanged.
 # Also called by trees.yml (trees: true) to rebuild the static tree map and publish it.
 name: daily
@@ -26,20 +26,21 @@ on:
 permissions:
   contents: read
 
-# one publish at a time; a queued run waits instead of cancelling the running one
+# one publish at a time (upload + prune of the same bucket); a queued run waits instead of cancelling the running one
 concurrency:
-  group: pages
+  group: publish
   cancel-in-progress: false
 
 env:
   TIPPECANOE_VERSION: "2.79.0"
+  R2_ACCOUNT_ID: 32744ef90c5fd4c66c8f20de5dd99e60
+  R2_BUCKET: schwammerl-data
+  LIVE_URL: https://pub-568205bcc18d4c72a0f8da2da3feebf3.r2.dev
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.trees && 120 || 60 }}
-    outputs:
-      skip: ${{ steps.publish.outputs.skip }}
     steps:
       - uses: actions/checkout@v7
 
@@ -73,7 +74,8 @@ jobs:
           echo "$HOME/.local/tippecanoe/bin" >> "$GITHUB_PATH"
           "$HOME/.local/tippecanoe/bin/tippecanoe" --version
 
-      # site grids (his 5 npz) + our Upper Austria forest (ooe_forest.fgb, ooe_trees.fgb); cache keyed on the assets
+      # site grids (his 5 npz) + our Upper Austria forest (ooe_forest.fgb, ooe_trees.fgb) + a rain_daily.json/.bin
+      # for the first publish (used only while shroomzn.app has none and nothing is published); cache keyed on the assets
       - name: Release assets key
         id: assets
         env:
@@ -106,20 +108,24 @@ jobs:
           test -f grids/ooe_trees.fgb || { echo "::error::ooe_trees.fgb is not in the habitat-grids release"; exit 1; }
           python pipeline/trees.py build grids grids/ooe_trees.fgb site
 
+      # builds site/, validates, uploads the new files, index.json last, then prunes the bucket
       - name: Publish
         id: publish
         env:
           FORCE: ${{ (inputs.force || inputs.trees) && 'true' || 'false' }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
-          args=(--site site)
+          args=(--site site --upload)
           if [ "$FORCE" = true ]; then args+=(--force); fi
+          if [ -f grids/rain_daily.json ] && [ -f grids/rain_daily.bin ]; then args+=(--rain-src grids); fi
           python pipeline/publish.py "${args[@]}"
 
-      - name: Site summary
+      - name: Summary
         if: steps.publish.outputs.skip == 'false'
         run: |
           {
-            echo "### Site"
+            echo "### Published"
             echo '```'
             du -sh site
             find site -type f | wc -l
@@ -127,24 +133,16 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload Pages artifact
-        if: steps.publish.outputs.skip == 'false'
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: site
-
-  deploy:
-    needs: build
-    if: needs.build.outputs.skip == 'false'
+  # GitHub disables schedules after 60 days without a commit. Re-enabling the (enabled) workflow through the API
+  # resets that timer, without commits. Only on scheduled runs: trees.yml must still grant actions: write.
+  keepalive:
+    if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
     permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      actions: write
     steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v5
+      - name: Keep the schedule enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/daily.yml/enable"

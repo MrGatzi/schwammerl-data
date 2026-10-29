@@ -1,9 +1,13 @@
 # Published format (contract between pipeline and app)
 
-Base URL: `https://mrgatzi.github.io/schwammerl-data/` (GitHub Pages, HTTP Range + CORS verified 2026-10-26).
+Base URL: `https://pub-568205bcc18d4c72a0f8da2da3feebf3.r2.dev/` (Cloudflare R2 bucket `schwammerl-data`, objects at
+the bucket root; HTTP Range, CORS set).
 All paths below are relative to the base URL. Stamps are `YYYYMMDDHHmm` (UTC) of the publish run.
 
-Each publish keeps the stamped files of the previous publish online (the app may hold an `index.json` for up to 3 h; runs are ~6 h apart), and deletes anything older.
+`index.json` is uploaded last and served with `Cache-Control: no-cache`; stamped files never change under their name
+(`immutable`). After a publish, the objects of the previous `index.json` stay in the bucket (the app may hold an
+`index.json` for up to 3 h; runs are ~6 h apart); anything neither index references is deleted. A file can be
+referenced by several publishes in a row (trees, and rain while `rain_daily` is missing).
 
 ## index.json
 

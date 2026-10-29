@@ -1,18 +1,22 @@
-"""Daily publish: chance zones for all species + rain + tap cells + stations -> site/ with index.json (docs/format.md).
+"""Daily publish: chance zones for all species + rain + tap cells + stations -> site/ + index.json -> R2 (docs/format.md).
 
 usage:
-  python pipeline/publish.py --site site/ [--force] [--rain-src SRC]
+  python pipeline/publish.py --site site/ [--upload] [--force] [--rain-src SRC]
+
+Without --upload it is a dry run: builds site/, validates and prints the upload plan, changes nothing online
+(with R2 credentials in the environment it checks against the bucket listing, else HEADs the public URL).
 
 Steps:
   1. fetch pilz_weather from shroomzn.app, read the live index.json (404 on the first run);
-     same `weatherGenerated` as the live site -> print "skip", GitHub output skip=true, exit 0 (unless --force)
-  2. download the previous publish's stamped files into site/ (the app may still hold the old index.json)
-  3. rain: build from rain_daily (shroomzn.app). Not there yet (404): reuse the previous publish's rain, cells and
-     stations (and its rainDays); no previous publish: build from --rain-src / $RAIN_SRC; else fail
-  4. per species: score all regions (model.py), zones (zones.py), PMTiles z5-z12 -> site/chance/<id>-<stamp>.pmtiles
-  5. trees: a trees-*.pmtiles already in site/ before this run (built by trees.py) wins, else the live one
-  6. write index.json, validate (files exist, < 95 MB each, < 950 MB total, keys) -> non-zero exit on failure, so the
-     deploy step does not run and the last good site stays live
+     same `weatherGenerated` as the live index -> print "skip", GitHub output skip=true, exit 0 (unless --force)
+  2. rain: build from rain_daily (shroomzn.app). Not there yet (404): reference the previous publish's rain, cells
+     and stations (and its rainDays; they stay in the bucket); no previous publish: build from --rain-src /
+     $RAIN_SRC; else fail
+  3. per species: score all regions (model.py), zones (zones.py), PMTiles z5-z12 -> site/chance/<id>-<stamp>.pmtiles
+  4. trees: a trees-*.pmtiles in site/ (built by trees.py) wins, else the live one
+  5. write site/index.json, validate (keys; every referenced file built or already in the bucket; size guards of
+     r2.py) -> non-zero exit on failure, nothing is uploaded and the last good publish stays live
+  6. --upload: new files first, index.json last, then prune what neither the new nor the previous index references
 """
 from __future__ import annotations
 
@@ -27,21 +31,19 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import model  # noqa: E402
+import r2  # noqa: E402
 import rain  # noqa: E402
 import shroomzn_io as sio  # noqa: E402
 import zones  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-LIVE = "https://mrgatzi.github.io/schwammerl-data"
-MAX_FILE = 95 * 1024 * 1024        # Pages: 100 MB per file
-MAX_SITE = 950 * 1024 * 1024       # Pages: 1 GB per site
+LIVE = "https://pub-568205bcc18d4c72a0f8da2da3feebf3.r2.dev"      # public read URL of the R2 bucket
 BOUNDS = [sio.GRID_WEST, sio.GRID_SOUTH, sio.GRID_EAST, sio.GRID_NORTH]
 
 
@@ -57,7 +59,7 @@ def gh_output(**kv):
                 f.write(f"{k}={v}\n")
 
 
-# ---------------------------------------------------------------- live site
+# ---------------------------------------------------------------- live index
 def http_get(url: str, timeout: float = 300) -> bytes | None:
     """bytes, or None on 404 (anything else raises: better no publish than one that drops the live files)."""
     req = urllib.request.Request(url, headers={"User-Agent": sio.USER_AGENT})
@@ -86,46 +88,6 @@ def cell_chunk_names() -> list[str]:
     lons = range(math.floor(sio.GRID_WEST), math.floor(sio.GRID_EAST) + 1)
     lats = range(math.floor(sio.GRID_SOUTH), math.floor(sio.GRID_NORTH) + 1)
     return [f"{lon}_{lat}.json" for lat in lats for lon in lons]
-
-
-def stamped_files(idx: dict) -> list[str]:
-    """the single files an index.json references (cells dir separately)"""
-    out = [v["file"] for v in idx.get("species", {}).values() if v.get("file")]
-    for k in ("rain", "trees", "stations"):
-        if (idx.get(k) or {}).get("file"):
-            out.append(idx[k]["file"])
-    return out
-
-
-def fetch_previous(live: str, idx: dict, site: Path) -> dict:
-    """download every file the live index references into site/ (same relative paths)."""
-    t0 = time.time()
-    paths = stamped_files(idx)
-    cells = (idx.get("cells") or {}).get("dir")
-    if cells:
-        paths += [f"{cells}/{n}" for n in cell_chunk_names()]
-    base = live.rstrip("/")
-
-    def one(rel: str):
-        dst = site / rel
-        if dst.exists():
-            return rel, dst.stat().st_size, "kept"
-        b = http_get(f"{base}/{rel}")
-        if b is None:
-            return rel, 0, "missing"
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dst.with_name(dst.name + ".part")
-        tmp.write_bytes(b)
-        tmp.rename(dst)
-        return rel, len(b), "ok"
-
-    with ThreadPoolExecutor(8) as ex:
-        res = list(ex.map(one, paths))
-    missing = [r for r, _, s in res if s == "missing" and not r.startswith(f"{cells}/")]
-    for r in missing:
-        log(f"previous publish: {r} not found on the live site")
-    return {"files": sum(1 for _, _, s in res if s == "ok"), "mb": round(sum(n for _, n, _ in res) / 1e6, 1),
-            "missing": missing, "s": round(time.time() - t0, 1)}
 
 
 # ---------------------------------------------------------------- inputs
@@ -211,7 +173,8 @@ def build_species(site: Path, stamp: str, weather: model.Weather, grids: Path, o
 
 
 # ---------------------------------------------------------------- index + validation
-def validate(site: Path, idx: dict, species_ids: list[str]) -> dict:
+def validate(idx: dict, species_ids: list[str]) -> list[str]:
+    """the keys of index.json (the files are checked by r2.plan)"""
     errors = []
     for k in ("v", "generated", "weatherGenerated", "rainDays", "bounds", "species", "rain", "trees", "cells", "stations"):
         if k not in idx or idx[k] in (None, "", []):
@@ -226,32 +189,17 @@ def validate(site: Path, idx: dict, species_ids: list[str]) -> dict:
         for s in sub:
             if not (idx.get(k) or {}).get(s):
                 errors.append(f"index.json: {k}.{s} missing")
-    for rel in stamped_files(idx):
-        if not (site / rel).is_file():
-            errors.append(f"referenced file missing: {rel}")
-    cells = (idx.get("cells") or {}).get("dir")
-    if cells and not any((site / cells).glob("*.json")):
-        errors.append(f"cells dir empty or missing: {cells}")
-    total, n, big = 0, 0, []
-    for p in site.rglob("*"):
-        if p.is_file():
-            sz = p.stat().st_size
-            total += sz
-            n += 1
-            if sz >= MAX_FILE:
-                big.append(f"{p.relative_to(site)} {sz / 1e6:.1f} MB")
-    errors += [f"file too big (>= 95 MB): {b}" for b in big]
-    if total >= MAX_SITE:
-        errors.append(f"site too big: {total / 1e6:.1f} MB (>= 950 MB)")
-    return {"errors": errors, "files": n, "mb": round(total / 1e6, 1)}
+    return errors
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--site", required=True, help="output directory (deployed as the whole Pages site)")
+    ap.add_argument("--site", required=True, help="output directory (new files + index.json, uploaded with --upload)")
+    ap.add_argument("--upload", action="store_true", help="upload to R2 and prune (needs R2_* credentials); "
+                    "without it: dry run")
     ap.add_argument("--force", action="store_true", help="publish even if the weather has not changed")
     ap.add_argument("--src", default=sio.SHROOMZN_DATA, help="shroomzn.app data source (URL or dir)")
-    ap.add_argument("--live", default=os.environ.get("LIVE_URL", LIVE), help="the published site (previous index)")
+    ap.add_argument("--live", default=os.environ.get("LIVE_URL", LIVE), help="public URL of the bucket (previous index)")
     ap.add_argument("--rain-src", default=os.environ.get("RAIN_SRC"),
                     help="rain_daily source used when shroomzn.app has none and there is no previous publish")
     ap.add_argument("--grids", default=str(ROOT / "grids"), help="dir with AT/CH/DE_S/DE_M/DE_N.npz")
@@ -284,15 +232,15 @@ def main(argv=None) -> int:
         if not need.exists():
             raise SystemExit(f"input missing: {need}")
 
+    s3 = r2.client() if a.upload or r2.has_credentials() else None
+    bucket = r2.bucket_name()
+    if s3:
+        s3.list_objects_v2(Bucket=bucket, MaxKeys=1)     # wrong credentials fail now, not after the build
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M")
     site.mkdir(parents=True, exist_ok=True)
-    own_trees = sorted(site.glob("trees-*.pmtiles"), key=lambda p: p.stat().st_mtime)   # before the downloads
+    own_trees = sorted(site.glob("trees-*.pmtiles"), key=lambda p: p.stat().st_mtime)
 
-    # 2. previous publish
-    if prev:
-        rep["previous_files"] = fetch_previous(a.live, prev, site)
-
-    # 3. rain + cells + stations
+    # 2. rain + cells + stations
     t = time.time()
     if rain_available(a.src):
         rr = rain.build_rain(a.src, str(wx_dir), a.src, str(site), stamp)
@@ -300,7 +248,7 @@ def main(argv=None) -> int:
     elif prev and prev.get("rain") and prev.get("cells") and prev.get("stations"):
         rain_idx = {k: prev[k] for k in ("rainDays", "rain", "cells", "stations")}
         rep["rain"] = {"from": "previous publish", "rainDays": prev["rainDays"]}
-        log("rain: rain_daily not on shroomzn.app yet, reusing the previous publish's rain, cells and stations")
+        log("rain: rain_daily not on shroomzn.app yet, referencing the previous publish's rain, cells and stations")
     elif a.rain_src:
         rr = rain.build_rain(a.rain_src, str(wx_dir), a.src, str(site), stamp)
         rain_idx, rep["rain"] = rr["index"], {"from": a.rain_src, "generated": rr.get("rainGenerated")}
@@ -309,11 +257,11 @@ def main(argv=None) -> int:
                          "reuse; pass --rain-src URL|DIR (or RAIN_SRC) with a rain_daily.json/.bin")
     rep["rain"]["s"] = round(time.time() - t, 1)
 
-    # 4. chance zones
+    # 3. chance zones
     date = dt.date.fromisoformat(a.date) if a.date else model.today_vienna()
     species, rep["chance"] = build_species(site, stamp, weather, grids, ooe, date, a.jobs, work)
 
-    # 5. trees
+    # 4. trees
     if own_trees:
         trees = {"file": own_trees[-1].name}
         rep["trees"] = {"from": "built", "file": trees["file"]}
@@ -323,21 +271,42 @@ def main(argv=None) -> int:
     else:
         raise SystemExit("trees: no trees-*.pmtiles in the site and none published yet; run the trees workflow")
 
-    # 6. index + validation
+    # 5. index + validation
     idx = {"v": 1, "generated": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
            "weatherGenerated": weather.generated, "rainDays": rain_idx["rainDays"], "bounds": BOUNDS,
            "species": species, "rain": rain_idx["rain"], "trees": trees, "cells": rain_idx["cells"],
            "stations": rain_idx["stations"]}
     (site / "index.json").write_text(json.dumps(idx, ensure_ascii=False, indent=1))
-    v = validate(site, idx, list(model.load_species()))
-    rep["site"] = {"files": v["files"], "mb": v["mb"], "stamp": stamp}
+    if s3:
+        objects, listed = r2.list_objects(s3, bucket), True
+    else:       # dry run without credentials: only the reused files, from the public URL
+        reused = [k for k in r2.stamped_files(idx) if not (site / k).is_file()]
+        cells = r2.cells_dir(idx)
+        cell_keys = [f"{cells}/{n}" for n in cell_chunk_names()] if cells and not (site / cells).is_dir() else []
+        objects, listed = r2.probe_live(a.live, reused, cell_keys, sio.USER_AGENT), False
+    plan = r2.plan(site, idx, objects, listed)
+    errors = validate(idx, list(model.load_species())) + plan["errors"]
+    rep["publish"] = {k: v for k, v in plan.items() if k not in ("upload", "errors")} | \
+        {"upload_files": len(plan["upload"]), "stamp": stamp}
+    if errors:
+        rep["total_s"] = round(time.time() - T0, 1)
+        print(json.dumps(rep, indent=1))
+        for e in errors:
+            log(f"VALIDATION: {e}")
+        (site / "index.json").unlink()       # never upload a broken index
+        return 1
+
+    # 6. upload + prune
+    if a.upload:
+        t = time.time()
+        prev_bucket = r2.read_index(s3, bucket, objects)     # the index actually in the bucket (may differ from prev)
+        r2.upload(s3, bucket, site, plan["upload"])
+        deleted = r2.prune(s3, bucket, [idx, prev, prev_bucket])
+        rep["upload"] = {"files": len(plan["upload"]) + 1, "deleted": len(deleted), "s": round(time.time() - t, 1)}
+    else:
+        log(f"dry run: would upload {len(plan['upload'])} files + index.json ({plan['upload_mb']} MB) to {bucket}")
     rep["total_s"] = round(time.time() - T0, 1)
     print(json.dumps(rep, indent=1))
-    if v["errors"]:
-        for e in v["errors"]:
-            log(f"VALIDATION: {e}")
-        (site / "index.json").unlink()       # never deploy a broken index
-        return 1
     return 0
 
 
